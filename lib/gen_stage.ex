@@ -884,11 +884,18 @@ defmodule GenStage do
 
   @callback init(args :: term) ::
               {:producer, state}
+              | {:producer, state, {:continue, term} | :hibernate}
               | {:producer, state, [producer_option]}
+              | {:producer, state, {:continue, term} | :hibernate, [producer_option]}
               | {:producer_consumer, state}
+              | {:producer_consumer, state, {:continue, term} | :hibernate}
               | {:producer_consumer, state, [producer_consumer_option]}
+              | {:producer_consumer, state, {:continue, term} | :hibernate,
+                 [producer_consumer_option]}
               | {:consumer, state}
+              | {:consumer, state, {:continue, term} | :hibernate}
               | {:consumer, state, [consumer_option]}
+              | {:consumer, state, {:continue, term} | :hibernate, [consumer_option]}
               | :ignore
               | {:stop, reason :: any}
             when state: any
@@ -924,6 +931,7 @@ defmodule GenStage do
   @callback handle_demand(demand :: pos_integer, state :: term) ::
               {:noreply, [event], new_state}
               | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
               | {:stop, reason, new_state}
             when new_state: term, reason: term, event: term
 
@@ -1003,6 +1011,7 @@ defmodule GenStage do
             ) ::
               {:noreply, [event], new_state}
               | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
               | {:stop, reason, new_state}
             when event: term, new_state: term, reason: term
 
@@ -1016,6 +1025,7 @@ defmodule GenStage do
   @callback handle_events(events :: [event], from, state :: term) ::
               {:noreply, [event], new_state}
               | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
               | {:stop, reason, new_state}
             when new_state: term, reason: term, event: term
 
@@ -1055,8 +1065,10 @@ defmodule GenStage do
   @callback handle_call(request :: term, from :: GenServer.from(), state :: term) ::
               {:reply, reply, [event], new_state}
               | {:reply, reply, [event], new_state, :hibernate}
+              | {:reply, reply, [event], new_state, {:continue, term}}
               | {:noreply, [event], new_state}
               | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
               | {:stop, reason, reply, new_state}
               | {:stop, reason, new_state}
             when reply: term, new_state: term, reason: term, event: term
@@ -1085,6 +1097,7 @@ defmodule GenStage do
   @callback handle_cast(request :: term, state :: term) ::
               {:noreply, [event], new_state}
               | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
               | {:stop, reason :: term, new_state}
             when new_state: term, event: term
 
@@ -1102,6 +1115,27 @@ defmodule GenStage do
   @callback handle_info(message :: term, state :: term) ::
               {:noreply, [event], new_state}
               | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
+              | {:stop, reason :: term, new_state}
+            when new_state: term, event: term
+
+  @doc """
+  Invoked to handle `continue` instructions.
+
+  It is useful for performing work after initialization or for splitting the work
+  in a callback in multiple steps, updating the process state along the way.
+
+  Return values are the same as `c:handle_cast/2`.
+
+  This callback is optional. If one is not implemented, the server will fail
+  if a continue instruction is used.
+
+  This callback is only supported on Erlang/OTP 21+.
+  """
+  @callback handle_continue(continue :: term, state :: term) ::
+              {:noreply, [event], new_state}
+              | {:noreply, [event], new_state, :hibernate}
+              | {:noreply, [event], new_state, {:continue, term}}
               | {:stop, reason :: term, new_state}
             when new_state: term, event: term
 
@@ -1138,6 +1172,7 @@ defmodule GenStage do
     format_status: 2,
     handle_call: 3,
     handle_cast: 2,
+    handle_continue: 2,
     handle_info: 2,
     terminate: 2
   ]
@@ -1721,22 +1756,58 @@ defmodule GenStage do
   def init({mod, args}) do
     case mod.init(args) do
       {:producer, state} ->
-        init_producer(mod, [], state)
+        init_producer(mod, [], state, nil)
+
+      {:producer, state, {:continue, _term} = continue} ->
+        init_producer(mod, [], state, continue)
+
+      {:producer, state, :hibernate} ->
+        init_producer(mod, [], state, :hibernate)
 
       {:producer, state, opts} when is_list(opts) ->
-        init_producer(mod, opts, state)
+        init_producer(mod, opts, state, nil)
+
+      {:producer, state, {:continue, _term} = continue, opts} when is_list(opts) ->
+        init_producer(mod, opts, state, continue)
+
+      {:producer, state, :hibernate, opts} when is_list(opts) ->
+        init_producer(mod, opts, state, :hibernate)
 
       {:producer_consumer, state} ->
-        init_producer_consumer(mod, [], state)
+        init_producer_consumer(mod, [], state, nil)
+
+      {:producer_consumer, state, {:continue, _term} = continue} ->
+        init_producer_consumer(mod, [], state, continue)
+
+      {:producer_consumer, state, :hibernate} ->
+        init_producer_consumer(mod, [], state, :hibernate)
 
       {:producer_consumer, state, opts} when is_list(opts) ->
-        init_producer_consumer(mod, opts, state)
+        init_producer_consumer(mod, opts, state, nil)
+
+      {:producer_consumer, state, {:continue, _term} = continue, opts} when is_list(opts) ->
+        init_producer_consumer(mod, opts, state, continue)
+
+      {:producer_consumer, state, :hibernate, opts} when is_list(opts) ->
+        init_producer_consumer(mod, opts, state, :hibernate)
 
       {:consumer, state} ->
-        init_consumer(mod, [], state)
+        init_consumer(mod, [], state, nil)
+
+      {:consumer, state, {:continue, _term} = continue} ->
+        init_consumer(mod, [], state, continue)
+
+      {:consumer, state, :hibernate} ->
+        init_consumer(mod, [], state, :hibernate)
 
       {:consumer, state, opts} when is_list(opts) ->
-        init_consumer(mod, opts, state)
+        init_consumer(mod, opts, state, nil)
+
+      {:consumer, state, {:continue, _term} = continue, opts} when is_list(opts) ->
+        init_consumer(mod, opts, state, continue)
+
+      {:consumer, state, :hibernate, opts} when is_list(opts) ->
+        init_consumer(mod, opts, state, :hibernate)
 
       {:stop, _} = stop ->
         stop
@@ -1749,7 +1820,7 @@ defmodule GenStage do
     end
   end
 
-  defp init_producer(mod, opts, state) do
+  defp init_producer(mod, opts, state, continue_or_hibernate) do
     with {:ok, dispatcher_mod, dispatcher_state, opts} <- init_dispatcher(opts),
          {:ok, buffer_size, opts} <-
            Utils.validate_integer(opts, :buffer_size, 10000, 0, :infinity, true),
@@ -1769,7 +1840,7 @@ defmodule GenStage do
         dispatcher_state: dispatcher_state
       }
 
-      {:ok, stage}
+      if continue_or_hibernate, do: {:ok, stage, continue_or_hibernate}, else: {:ok, stage}
     else
       {:error, message} -> {:stop, {:bad_opts, message}}
     end
@@ -1791,7 +1862,7 @@ defmodule GenStage do
     end
   end
 
-  defp init_producer_consumer(mod, opts, state) do
+  defp init_producer_consumer(mod, opts, state, continue_or_hibernate) do
     with {:ok, dispatcher_mod, dispatcher_state, opts} <- init_dispatcher(opts),
          {:ok, subscribe_to, opts} <- Utils.validate_list(opts, :subscribe_to, []),
          {:ok, buffer_size, opts} <-
@@ -1810,20 +1881,66 @@ defmodule GenStage do
         dispatcher_state: dispatcher_state
       }
 
-      consumer_init_subscribe(subscribe_to, stage)
+      case handle_gen_server_init_args(continue_or_hibernate, stage) do
+        {:ok, stage} ->
+          consumer_init_subscribe(subscribe_to, stage)
+
+        {:ok, stage, args} ->
+          {:ok, stage} = consumer_init_subscribe(subscribe_to, stage)
+          {:ok, stage, args}
+
+        {:stop, _, _} = error ->
+          error
+      end
     else
       {:error, message} -> {:stop, {:bad_opts, message}}
     end
   end
 
-  defp init_consumer(mod, opts, state) do
+  defp init_consumer(mod, opts, state, continue_or_hibernate) do
     with {:ok, subscribe_to, opts} <- Utils.validate_list(opts, :subscribe_to, []),
          :ok <- Utils.validate_no_opts(opts) do
       stage = %GenStage{mod: mod, state: state, type: :consumer}
-      consumer_init_subscribe(subscribe_to, stage)
+
+      case handle_gen_server_init_args(continue_or_hibernate, stage) do
+        {:ok, stage} ->
+          consumer_init_subscribe(subscribe_to, stage)
+
+        {:ok, stage, args} ->
+          {:ok, stage} = consumer_init_subscribe(subscribe_to, stage)
+          {:ok, stage, args}
+
+        {:stop, _, _} = error ->
+          error
+      end
     else
       {:error, message} -> {:stop, {:bad_opts, message}}
     end
+  end
+
+  defp handle_gen_server_init_args({:continue, _term} = continue, stage) do
+    case handle_continue(continue, stage) do
+      {:noreply, stage} ->
+        {:ok, stage}
+
+      {:noreply, stage, :hibernate} ->
+        {:ok, stage, :hibernate}
+
+      {:noreply, stage, {:continue, _term} = continue} ->
+        {:ok, stage, continue}
+
+      {:stop, reason, stage} ->
+        {:stop, reason, stage}
+    end
+  end
+
+  defp handle_gen_server_init_args(:hibernate, stage), do: {:ok, stage, :hibernate}
+  defp handle_gen_server_init_args(nil, stage), do: {:ok, stage}
+
+  @doc false
+
+  def handle_continue(continue, %{state: state} = stage) do
+    noreply_callback(:handle_continue, [continue, state], stage)
   end
 
   @doc false
@@ -1853,6 +1970,10 @@ defmodule GenStage do
       {:reply, reply, events, state, :hibernate} when is_list(events) ->
         stage = dispatch_events(events, length(events), %{stage | state: state})
         {:reply, reply, stage, :hibernate}
+
+      {:reply, reply, events, state, {:continue, _term} = continue} ->
+        stage = dispatch_events(events, length(events), %{stage | state: state})
+        {:reply, reply, stage, continue}
 
       {:stop, reason, reply, state} ->
         {:stop, reason, reply, %{stage | state: state}}
@@ -1994,7 +2115,7 @@ defmodule GenStage do
     case producers do
       %{^ref => entry} ->
         {batches, stage} = consumer_receive(from, entry, events, stage)
-        consumer_dispatch(batches, from, mod, state, stage, false)
+        consumer_dispatch(batches, from, mod, state, stage, nil)
 
       _ ->
         msg = {:"$gen_producer", {self(), ref}, {:cancel, :unknown_subscription}}
@@ -2121,6 +2242,14 @@ defmodule GenStage do
     end
   end
 
+  defp noreply_callback(:handle_continue, [continue, state], %{mod: mod} = stage) do
+    if function_exported?(mod, :handle_continue, 2) do
+      handle_noreply_callback(mod.handle_continue(continue, state), stage)
+    else
+      :error_handler.raise_undef_exception(mod, :handle_continue, [continue, state])
+    end
+  end
+
   defp noreply_callback(callback, args, %{mod: mod} = stage) do
     handle_noreply_callback(apply(mod, callback, args), stage)
   end
@@ -2134,6 +2263,10 @@ defmodule GenStage do
       {:noreply, events, state, :hibernate} when is_list(events) ->
         stage = dispatch_events(events, length(events), %{stage | state: state})
         {:noreply, stage, :hibernate}
+
+      {:noreply, events, state, {:continue, _term} = continue} when is_list(events) ->
+        stage = dispatch_events(events, length(events), %{stage | state: state})
+        {:noreply, stage, continue}
 
       {:stop, reason, state} ->
         {:stop, reason, %{stage | state: state}}
@@ -2256,6 +2389,9 @@ defmodule GenStage do
           {:noreply, %{dispatcher_state: dispatcher_state} = stage} ->
             # Call the dispatcher after since it may generate demand and the
             # main module must know the consumer is no longer subscribed.
+            dispatcher_callback(:cancel, [{pid, ref}, dispatcher_state], stage)
+
+          {:noreply, %{dispatcher_state: dispatcher_state} = stage, _hibernate_or_continue} ->
             dispatcher_callback(:cancel, [{pid, ref}, dispatcher_state], stage)
 
           {:stop, _, _} = stop ->
@@ -2458,17 +2594,22 @@ defmodule GenStage do
     {[{events, 0}], stage}
   end
 
-  defp consumer_dispatch([{batch, ask} | batches], from, mod, state, stage, _hibernate?) do
+  defp consumer_dispatch([{batch, ask} | batches], from, mod, state, stage, _gen_opts) do
     case mod.handle_events(batch, from, state) do
       {:noreply, events, state} when is_list(events) ->
         stage = dispatch_events(events, length(events), stage)
         ask(from, ask, [:noconnect])
-        consumer_dispatch(batches, from, mod, state, stage, false)
+        consumer_dispatch(batches, from, mod, state, stage, nil)
 
-      {:noreply, events, state, :hibernate} when is_list(events) ->
+      {:noreply, events, state, :hibernate} ->
         stage = dispatch_events(events, length(events), stage)
         ask(from, ask, [:noconnect])
-        consumer_dispatch(batches, from, mod, state, stage, true)
+        consumer_dispatch(batches, from, mod, state, stage, :hibernate)
+
+      {:noreply, events, state, {:continue, _} = continue} ->
+        stage = dispatch_events(events, length(events), stage)
+        ask(from, ask, [:noconnect])
+        consumer_dispatch(batches, from, mod, state, stage, continue)
 
       {:stop, reason, state} ->
         {:stop, reason, %{stage | state: state}}
@@ -2478,12 +2619,12 @@ defmodule GenStage do
     end
   end
 
-  defp consumer_dispatch([], _from, _mod, state, stage, false) do
+  defp consumer_dispatch([], _from, _mod, state, stage, nil) do
     {:noreply, %{stage | state: state}}
   end
 
-  defp consumer_dispatch([], _from, _mod, state, stage, true) do
-    {:noreply, %{stage | state: state}, :hibernate}
+  defp consumer_dispatch([], _from, _mod, state, stage, gen_opts) do
+    {:noreply, %{stage | state: state}, gen_opts}
   end
 
   defp consumer_subscribe({to, opts}, stage) when is_list(opts),
@@ -2612,11 +2753,11 @@ defmodule GenStage do
         {producer_id, _, _} = entry
         from = {producer_id, ref}
         {batches, stage} = consumer_receive(from, entry, events, stage)
-        consumer_dispatch(batches, from, mod, state, stage, false)
+        consumer_dispatch(batches, from, mod, state, stage, nil)
 
       %{} ->
         # We queued but producer was removed
-        consumer_dispatch([{events, 0}], {:pid, ref}, mod, state, stage, false)
+        consumer_dispatch([{events, 0}], {:pid, ref}, mod, state, stage, nil)
     end
   end
 
@@ -2633,6 +2774,9 @@ defmodule GenStage do
           {:noreply, stage, :hibernate} ->
             take_pc_events(queue, counter, stage)
 
+          {:noreply, stage, {:continue, _term}} ->
+            take_pc_events(queue, counter, stage)
+
           {:stop, _, _} = stop ->
             stop
         end
@@ -2643,6 +2787,9 @@ defmodule GenStage do
             take_pc_events(queue, counter, stage)
 
           {:noreply, %{events: {queue, counter}} = stage, :hibernate} ->
+            take_pc_events(queue, counter, stage)
+
+          {:noreply, %{events: {queue, counter}} = stage, {:continue, _term}} ->
             take_pc_events(queue, counter, stage)
 
           {:stop, _, _} = stop ->
